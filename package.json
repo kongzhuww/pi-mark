@@ -1,0 +1,36 @@
+{
+  "name": "pi-mark",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi session bookmarks with the existing custom Herdr integration.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "herdr",
+    "bookmarks"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kongzhuww/pi-mark.git"
+  },
+  "scripts": {
+    "test": "node --test tests/session-marker.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/session-marker.ts"
+    ]
+  },
+  "files": [
+    "extensions/",
+    "README.md"
+  ]
+}

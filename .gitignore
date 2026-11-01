@@ -1,0 +1,12 @@
+node_modules/
+.pi/
+.env
+.env.*
+!.env.example
+*.log
+*.jsonl
+marked-sessions.json
+auth.json
+credentials.json
+coverage/
+.local/
