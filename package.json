@@ -1,6 +1,6 @@
 {
   "name": "pi-mark",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Pi session bookmarks with the existing custom Herdr integration.",
   "type": "module",
@@ -16,7 +16,8 @@
     "url": "https://github.com/kongzhuww/pi-mark.git"
   },
   "scripts": {
-    "test": "node --test tests/session-marker.test.mjs"
+    "test": "node --test tests/session-marker.test.mjs",
+    "test:rpc": "node scripts/verify-rpc.mjs"
   },
   "engines": {
     "node": ">=22.18.0"

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import net from "node:net";
+import { randomUUID } from "node:crypto";
 
 export interface MarkedSession {
   id: string;
@@ -17,6 +18,32 @@ export interface MarkedSession {
   updated_at: number;
 }
 
+function guardCommand(handler: (args: string, ctx: ExtensionContext) => Promise<void>) {
+  return async (args: string, ctx: ExtensionContext) => {
+    try {
+      await handler(args, ctx);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`收藏操作失败：${detail}。请先备份并检查收藏索引；不会自动重置原文件。`, "error");
+    }
+  };
+}
+
+function isValidEntry(value: unknown): value is MarkedSession {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entry = value as Record<string, unknown>;
+  if (typeof entry.id !== "string" || !entry.id.trim()
+    || typeof entry.path !== "string" || !entry.path.trim()
+    || typeof entry.title !== "string") return false;
+  for (const key of ["profile", "command", "resume_cmd", "cwd"]) {
+    if (entry[key] != null && typeof entry[key] !== "string") return false;
+  }
+  for (const key of ["created_at", "updated_at"]) {
+    if (entry[key] != null && (!Number.isSafeInteger(entry[key]) || entry[key] < 0)) return false;
+  }
+  return true;
+}
+
 function getHomeDir(): string {
   return process.env.USERPROFILE || process.env.HOME || os.homedir();
 }
@@ -28,13 +55,14 @@ function getMarkedSessionsPath(): string {
 function readMarkedSessions(): MarkedSession[] {
   const filePath = getMarkedSessionsPath();
   try {
-    if (!fs.existsSync(filePath)) {
-      return [];
+    const data: unknown = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    if (!Array.isArray(data) || !data.every(isValidEntry)) {
+      throw new Error("收藏索引格式不正确");
     }
-    const data = fs.readFileSync(filePath, "utf-8");
-    return JSON.parse(data) || [];
-  } catch {
-    return [];
+    return data;
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
   }
 }
 
@@ -44,7 +72,16 @@ function writeMarkedSessions(sessions: MarkedSession[]): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(filePath, JSON.stringify(sessions, null, 2), "utf-8");
+  // Replace only after a complete write; never truncate the live index in place.
+  const temporary = path.join(dir, `.marked-sessions.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(sessions, null, 2), {
+      encoding: "utf-8", flag: "wx", mode: 0o600,
+    });
+    fs.renameSync(temporary, filePath);
+  } finally {
+    try { fs.unlinkSync(temporary); } catch {}
+  }
 }
 
 function getProfileName(): string {
@@ -126,7 +163,7 @@ export default function sessionMarkerExtension(pi: ExtensionAPI) {
       ];
       return options.filter((o) => o.value.startsWith(prefix));
     },
-    handler: async (args, ctx: ExtensionContext) => {
+    handler: guardCommand(async (args, ctx) => {
       const trimmedArgs = (args || "").trim();
 
       if (trimmedArgs === "list") {
@@ -137,7 +174,10 @@ export default function sessionMarkerExtension(pi: ExtensionAPI) {
         }
         let listText = `已标记的喜欢的对话 (${sessions.length} 个):\n`;
         sessions.forEach((s, idx) => {
-          listText += `  ${idx + 1}. [${s.profile}] ${s.title}\n     命令: ${s.resume_cmd}\n`;
+          const profile = s.profile || "agent";
+          // Correct legacy hints on display without rewriting the user's index.
+          const command = s.command || getProfileCommand(profile);
+          listText += `  ${idx + 1}. [${profile}] ${s.title}\n     命令: ${command} --session "${s.path}"\n`;
         });
         if (ctx.hasUI) {
           ctx.ui.notify(listText, "info");
@@ -150,8 +190,9 @@ export default function sessionMarkerExtension(pi: ExtensionAPI) {
       const sessionFile = ctx.sessionManager?.getSessionFile?.();
       const sessionId = ctx.sessionManager?.getSessionId?.();
 
-      if (!sessionFile) {
-        ctx.ui.notify("无法获取当前会话文件路径，会话可能未保存。", "warning");
+      if (!sessionFile || !path.isAbsolute(sessionFile) || !fs.existsSync(sessionFile)
+        || !fs.statSync(sessionFile).isFile() || fs.statSync(sessionFile).size === 0) {
+        ctx.ui.notify("当前会话尚未保存到磁盘，暂时无法收藏；请在会话实际保存后重试。", "warning");
         return;
       }
 
@@ -170,7 +211,7 @@ export default function sessionMarkerExtension(pi: ExtensionAPI) {
 
       const profile = getProfileName();
       const command = getProfileCommand(profile);
-      const resume_cmd = `${command} --resume "${sessionFile}"`;
+      const resume_cmd = `${command} --session "${sessionFile}"`;
       const cwd = ctx.cwd || process.cwd();
       const now = Date.now();
 
@@ -180,14 +221,14 @@ export default function sessionMarkerExtension(pi: ExtensionAPI) {
       );
 
       const entry: MarkedSession = {
-        id: sessionId || path.basename(sessionFile, ".json"),
+        id: sessionId || path.basename(sessionFile, path.extname(sessionFile)),
         path: sessionFile,
         title,
         profile,
         command,
         resume_cmd,
         cwd,
-        created_at: existingIdx >= 0 ? sessions[existingIdx].created_at : now,
+        created_at: existingIdx >= 0 ? sessions[existingIdx].created_at ?? now : now,
         updated_at: now,
       };
 
@@ -209,12 +250,12 @@ export default function sessionMarkerExtension(pi: ExtensionAPI) {
         `★ 已将该会话标记为喜欢的对话！\n可在 Herdr 侧边栏下半部分直接点击恢复，亦可在 /resume 中搜 ★ 找到。`,
         "info"
       );
-    },
+    }),
   });
 
   pi.registerCommand("unmark", {
     description: "取消当前会话的标记，从 Herdr 喜欢的对话中移除",
-    handler: async (_args, ctx: ExtensionContext) => {
+    handler: guardCommand(async (_args, ctx) => {
       const sessionFile = ctx.sessionManager?.getSessionFile?.();
       const sessionId = ctx.sessionManager?.getSessionId?.();
 
@@ -242,6 +283,6 @@ export default function sessionMarkerExtension(pi: ExtensionAPI) {
       sendHerdrNotification("会话已取消标记", "已从 Herdr 喜欢的对话中移除");
 
       ctx.ui.notify("已取消标记此会话，不再继续跟踪，已从 Herdr 喜欢的对话中移除。", "info");
-    },
+    }),
   });
 }
